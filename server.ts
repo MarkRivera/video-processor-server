@@ -10,7 +10,7 @@ const server = fastify({});
 
 server.register(fastifyMultipart,)
 server.register(cors, {
-  origin: "http://127.0.0.1:3001",
+  origin: process.env.ENV === "development" ? "http://127.0.0.1:3001" : process.env.ORIGIN_URL || "http://127.0.0.1:3001",
 })
 
 routes.forEach(route => server.route(route))
