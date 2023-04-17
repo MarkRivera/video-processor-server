@@ -2,3 +2,4 @@ node_modules
 
 # ENVs
 env
+.env
