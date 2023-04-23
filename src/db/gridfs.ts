@@ -1,4 +1,3 @@
-import { createReadStream } from "fs";
 import { Readable } from "stream";
 import db from "./connect";
 import { GridFSBucket, ObjectId } from "mongodb";

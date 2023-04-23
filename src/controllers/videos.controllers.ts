@@ -1,22 +1,32 @@
 import { FastifyReply, FastifyRequest } from 'fastify';
-import { UUID } from 'crypto';
-import fs from 'fs';
-import db from '../db/connect';
+import { UUID, randomUUID } from 'crypto';
 import { createOrGetGridFS, deleteFile, downloadMetadata, downloadMetadataById, upload } from '../db/gridfs';
 import { ObjectId } from 'mongodb';
-
-
-const getBucket = async () => {
-  const bucket = await createOrGetGridFS();
-  if (!bucket) {
-    throw new Error("Trouble getting bucket!")
-  }
-
-  return bucket;
-}
+import { Multipart } from '@fastify/multipart';
+import { SendMessageCommandInput } from '@aws-sdk/client-sqs';
+import { getQueueURL } from '../aws/getQueueUrl';
+import { sendMessage } from '../aws/sendMessage';
 
 type FileChunks = Record<UUID, Buffer[]>;
 const chunks: FileChunks = {};
+interface CreateVideoBody {
+  chunkIndex: string;
+  totalChunks: string;
+  uuid: UUID;
+}
+
+async function uploadToBucket(bufferList: Buffer[], filename: string, uuid: UUID): Promise<ObjectId> {
+  const completeFileBuffer = Buffer.concat(bufferList);
+  const bucket = await getBucket();
+  const video_id = upload(bucket, completeFileBuffer, filename || "File", {
+    uuid
+  })
+
+  bufferList.length = 0;
+  bufferList = []
+
+  return video_id;
+}
 
 export async function getVideosMetadata() {
   try {
@@ -37,28 +47,104 @@ export async function getSingleVideoMetadata(req: any, res: any) {
     const isValidId = ObjectId.isValid(id)
     if (isValidId) {
       const bucket = await getBucket();
-      const video = await downloadMetadataById(new ObjectId(id), bucket);
-      return video;
+      const videos = await downloadMetadataById(new ObjectId(id), bucket);
+
+      return videos.shift() || { msg: "Sorry, no video found" };
     } else {
       throw new Error("Invalid Id!")
     }
   } catch (error) {
     console.error("Having trouble getting 1 video!", error)
+    return { msg: "Looks like your Id was invalid!" }
   }
 }
 
-interface CreateVideoBody {
-  chunkIndex: string;
-  totalChunks: string;
+function generateMessageParams(queueUrl: string, videoData: {
+  filename: string;
+  id: ObjectId;
   uuid: UUID;
+}): SendMessageCommandInput {
+  console.log(videoData.id.toString())
+  return {
+    MessageAttributes: {
+      FileName: {
+        DataType: "String",
+        StringValue: videoData.filename
+      },
+
+      ObjectId: {
+        DataType: "String",
+        StringValue: videoData.id.toString()
+      }
+    },
+    MessageBody: "Video Sent by Video Server",
+    QueueUrl: queueUrl,
+    MessageDeduplicationId: randomUUID(),
+    MessageGroupId: videoData.uuid
+  };
 }
+
+export async function createVideo(req: FastifyRequest<{ Body: CreateVideoBody }>, res: FastifyReply) {
+  let data = req.parts();
+  const parts = await createPartsObject(data); // Possibly slow, lets test it later
+  const { uuid, chunk, totalChunks, chunkIndex, filename } = parts;
+
+  chunks[uuid] = [];
+  let bufferList = chunks[uuid];
+  bufferList.push(chunk)
+
+  if (isLastChunk(chunkIndex, totalChunks)) {
+    const video_id = await uploadToBucket(bufferList, filename, uuid);
+    delete chunks[uuid];
+    const queueUrlData = await getQueueURL();
+
+    if (!queueUrlData?.QueueUrl) {
+      // TODO: Handle gracefully, user shouldn't lose their video upload because of an error here, maybe retry a few times before deleting  
+      const bucket = await getBucket()
+      await deleteFile(new ObjectId(video_id), bucket);
+      return { msg: "There was an error with sending this video to a queue" }
+    }
+
+    const videoData = {
+      filename,
+      id: video_id,
+      uuid
+    };
+    const url = queueUrlData.QueueUrl
+    const messageParams = generateMessageParams(url, videoData)
+
+    await sendMessage(messageParams);
+
+    return { msg: "Completed video upload", video_id };
+  }
+}
+
+export async function deleteVideo(req: any, res: any) {
+  try {
+    const id = req.params.id;
+    const isValidId = ObjectId.isValid(id)
+
+    if (isValidId) {
+      const bucket = await getBucket();
+      await deleteFile(new ObjectId(id), bucket)
+    } else {
+      throw new Error("Invalid Id!")
+    }
+
+    return { msg: "File deletion successful!" }
+  } catch (error) {
+    console.error("Encountered error while deleting!", error)
+    return { msg: "Sorry, there was en error while deleting!" }
+  }
+}
+
+// UTIL
 
 function isLastChunk(chunkIndex: number, totalChunks: number): boolean {
   return chunkIndex === totalChunks - 1;
 }
 
-export async function createVideo(req: FastifyRequest<{ Body: CreateVideoBody }>, res: FastifyReply) {
-  let data = req.parts();
+async function createPartsObject(data: AsyncIterableIterator<Multipart>) {
   const parts: Record<string, any> = {};
 
   for await (const part of data) {
@@ -85,45 +171,14 @@ export async function createVideo(req: FastifyRequest<{ Body: CreateVideoBody }>
     }
   }
 
-  const { uuid, chunk, totalChunks, chunkIndex, filename } = parts;
-
-  chunks[uuid] = [];
-  let bufferList = chunks[uuid];
-  bufferList.push(chunk)
-
-  if (isLastChunk(chunkIndex, totalChunks)) {
-    const completeFileBuffer = Buffer.concat(bufferList);
-
-    console.log({ chunks })
-    const bucket = await getBucket();
-    const video_id = upload(bucket, completeFileBuffer, filename || "Test", {
-      uuid
-    })
-
-    bufferList.length = 0;
-    bufferList = []
-    delete chunks[uuid];
-    return { msg: "Completed video upload", video_id }
-  }
-
-  return { msg: "Expected a completed video but is here instead" }
+  return parts;
 }
 
-export async function deleteVideo(req: any, res: any) {
-  try {
-    const id = req.params.id;
-    const isValidId = ObjectId.isValid(id)
-
-    if (isValidId) {
-      const bucket = await getBucket();
-      await deleteFile(new ObjectId(id), bucket)
-    } else {
-      throw new Error("Invalid Id!")
-    }
-
-    return { msg: "File deletion successful!" }
-  } catch (error) {
-    console.error("Encountered error while deleting!", error)
-    return { msg: "Sorry, there was en error while deleting!" }
+const getBucket = async () => {
+  const bucket = await createOrGetGridFS();
+  if (!bucket) {
+    throw new Error("Trouble getting bucket!")
   }
+
+  return bucket;
 }
