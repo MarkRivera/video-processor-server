@@ -4,20 +4,24 @@ dotenv.config();
 import express, { Request, Response } from 'express';
 import bodyParser from 'body-parser';
 import cors from "cors";
-
-import { WriteStream, createWriteStream, existsSync, mkdirSync } from 'fs';
-import { appendFile, rename, unlink } from 'fs/promises';
+import helmet from "helmet";
+import morgan from "morgan";
+import { existsSync, mkdirSync } from 'fs';
 import md5 from 'md5';
 
-import { createOrGetGridFS, uploadToBucket } from "./src/db/gridfs";
 import { sendMessage } from './src/aws/sendMessage';
 import { abortMultipartUpload, createMultipartUpload, uploadMutlipartToRawS3Bucket } from './src/aws/s3/upload';
-import { downloadFile } from './src/aws/s3/download';
+import { uploadData } from './src/db/db';
 
 const app = express();
-app.use(bodyParser.raw({ type: 'application/octet-stream', limit: '200mb' }));
+app.use(helmet());
 app.use(cors({
   origin: process.env.ORIGIN_URL
+}));
+
+app.use(bodyParser.raw({ type: 'application/octet-stream', limit: '200mb' }));
+app.use(morgan('combined', {
+  skip: function (_, res) { return res.statusCode < 400 }
 }));
 
 // If tmp directory doesn't exist, create it
@@ -64,21 +68,10 @@ app.post("/api/v1/videos/upload", async (req: Request, res: Response) => {
       return res.status(500).send({ message: "Error creating upload id!" });
     }
   }
+  
   // Upload to S3 bucket in chunks
   try {
     await uploadMutlipartToRawS3Bucket(tmpFileName, buffer, parseInt(currentChunk), lastChunk, upload_id);
-
-    if (lastChunk) {
-      const response = (await downloadFile(tmpFileName)).Body?.transformToByteArray();
-      if (!response) return res.status(500).send({ message: "Object doesn't exist" });
-
-      // Create file from Uint8Array
-      const file = await response;
-      const fileBuffer = Buffer.from(file);
-
-      // Store in tmp folder
-      await appendFile("./tmp/" + tmpFileName, fileBuffer);
-    }
   } catch (error) {
     console.error(error)
     abortMultipartUpload(name, upload_id)
@@ -86,58 +79,27 @@ app.post("/api/v1/videos/upload", async (req: Request, res: Response) => {
   }
 
   if (lastChunk) {
+    const document = {
+      name,
+      size,
+      type,
+      upload_id,
+      totalChunks,
+      bucketName: tmpFileName
+    }
+
+    try {
+      await uploadData(document);
+      await sendMessage(tmpFileName, document)
+    } catch (error) {
+      console.error(error)
+      return res.status(500).send({ message: "Error uploading to DB or Sending Message" });
+    }
+
     upload_id = "";
   }
-  // const fileExists = existsSync("./tmp/" + tmpFileName);
-
-  // if (firstChunk && fileExists) {
-  //   try {
-  //     await unlink("./tmp/" + tmpFileName)
-  //   } catch (error) {
-  //     console.error(error)
-  //     return res.status(500).send({ message: "Error removing file" });
-  //   }
-  // }
 
 
-  // try {
-  //   await appendFile("./tmp/" + tmpFileName, buffer);
-
-  //   if (lastChunk) {
-  //     const date = Date.now()
-  //     const finalFileName = md5(date.toString()).substring(0, 6) + '.' + ext;
-
-  //     await rename("./tmp/" + tmpFileName, "./tmp/" + finalFileName)
-
-  //     // Store in Database
-  //     // const bucket = await createOrGetGridFS();
-
-  //     // if (!bucket) {
-  //     //   throw new Error("Bucket not found");
-  //     // }
-
-
-  //     // TODO: Its better to upload to an S3 and store that information in the DB
-  //     // const video_id = await uploadToBucket(finalFileName, {
-  //     //   name,
-  //     //   size,
-  //     //   type,
-  //     //   totalChunks
-  //     // });
-
-  //     // const data = await sendMessage(video_id, finalFileName)
-
-  //     return res.json({
-  //       finalFileName,
-  //       // video_id
-  //     })
-  //   }
-  // } catch (error) {
-  //   if (error) {
-  //     console.error(error);
-  //     return res.status(500).send({ message: "Error appending file" });
-  //   }
-  // }
 
   return res.json("ok")
 })

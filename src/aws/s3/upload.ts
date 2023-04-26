@@ -1,7 +1,5 @@
 import { s3Client } from "./s3";
-import { PutObjectCommand, CreateMultipartUploadCommand, CompleteMultipartUploadCommand, UploadPartCommand, AbortMultipartUploadCommand, UploadPartCommandOutput, CompletedPart } from "@aws-sdk/client-s3";
-
-
+import { PutObjectCommand, CreateMultipartUploadCommand, CompleteMultipartUploadCommand, UploadPartCommand, AbortMultipartUploadCommand, CompletedPart } from "@aws-sdk/client-s3";
 
 let etags: {
   ETag: string,
