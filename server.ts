@@ -57,8 +57,9 @@ app.post("/api/v1/videos/upload", async (req: Request, res: Response, next: Next
 
   if (firstChunk) {
     try {
-      // Get multipart upload id
-      upload_id = (await createMultipartUpload(tmpFileName)).UploadId as string;
+      // This implementation is not ideal, but it works for now. If other new requests come in while the previous one is still uploading, the upload_id will be overwritten
+      // This can be fixed by using a redis cache to store the upload_id and check if it exists before creating a new one
+      upload_id = (await createMultipartUpload(tmpFileName)).UploadId as string; // Get multipart upload id
     } catch (error) {
       return next(error)
     }
