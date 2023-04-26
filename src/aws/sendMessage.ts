@@ -3,6 +3,7 @@ import { getQueueURL } from "./getQueueUrl";
 
 import { randomUUID } from "crypto";
 import { sqsClient } from "./sqsClient";
+import { SQSError } from "../errors";
 
 function generateMessageParams(queueUrl: string, videoData: Record<string, any>): SendMessageCommandInput {
   return {
@@ -28,19 +29,17 @@ function generateMessageParams(queueUrl: string, videoData: Record<string, any>)
 export async function sendMessage(tmpFileName: string, document: Record<string, any>) {
   const queueUrlData = await getQueueURL();
 
-  if (!queueUrlData?.QueueUrl) {
-    // TODO: Handle gracefully, user shouldn't lose their video upload because of an error here, maybe retry a few times before deleting  
-    return { msg: "There was an error with sending this video to a queue" }
-  }
-
   const videoData = {
     filename: tmpFileName,
     ...document
   };
 
-  const url = queueUrlData.QueueUrl
+  const url = queueUrlData.QueueUrl as string; // NOTE: The thrown errors are handled in the caller function and should protect against an undefined QueueUrl
   const messageParams = generateMessageParams(url, videoData)
 
-  const data = await sqsClient.send(new SendMessageCommand(messageParams));
+  const data = await sqsClient.send(new SendMessageCommand(messageParams)).catch((error) => {
+    throw new SQSError('Error sending message to SQS', 'SQS_SEND_MESSAGE', { error })
+  });
+
   return data;
 }

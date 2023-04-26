@@ -1,7 +1,7 @@
 import * as dotenv from 'dotenv'
 dotenv.config();
 
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import bodyParser from 'body-parser';
 import cors from "cors";
 import helmet from "helmet";
@@ -12,6 +12,7 @@ import md5 from 'md5';
 import { sendMessage } from './src/aws/sendMessage';
 import { abortMultipartUpload, createMultipartUpload, uploadMutlipartToRawS3Bucket } from './src/aws/s3/upload';
 import { uploadData } from './src/db/db';
+import { MultipartChunkUploadError } from './src/errors';
 
 const app = express();
 app.use(helmet());
@@ -36,7 +37,7 @@ if (!existsSync('./tmp')) {
 
 let upload_id: string = "";
 
-app.post("/api/v1/videos/upload", async (req: Request, res: Response) => {
+app.post("/api/v1/videos/upload", async (req: Request, res: Response, next: NextFunction) => {
   const { name, size, currentChunk, totalChunks, type } = req.query;
 
   if (!name || !size || !currentChunk || !totalChunks || !type) {
@@ -56,26 +57,17 @@ app.post("/api/v1/videos/upload", async (req: Request, res: Response) => {
 
   if (firstChunk) {
     try {
-      const data = await createMultipartUpload(tmpFileName)
-
-      if (!data.UploadId) {
-        throw new Error("Error creating upload id");
-      }
-
-      upload_id = data.UploadId;
+      // Get multipart upload id
+      upload_id = (await createMultipartUpload(tmpFileName)).UploadId as string;
     } catch (error) {
-      console.error(error)
-      return res.status(500).send({ message: "Error creating upload id!" });
+      return next(error)
     }
   }
-  
-  // Upload to S3 bucket in chunks
+
   try {
-    await uploadMutlipartToRawS3Bucket(tmpFileName, buffer, parseInt(currentChunk), lastChunk, upload_id);
+    await uploadMutlipartToRawS3Bucket(tmpFileName, buffer, parseInt(currentChunk), lastChunk, upload_id) // Upload to S3 bucket in chunks
   } catch (error) {
-    console.error(error)
-    abortMultipartUpload(name, upload_id)
-    return res.status(500).send({ message: "Error uploading to S3" });
+    return next(error)
   }
 
   if (lastChunk) {
@@ -89,24 +81,74 @@ app.post("/api/v1/videos/upload", async (req: Request, res: Response) => {
     }
 
     try {
-      await uploadData(document);
+      await uploadData(document)
       await sendMessage(tmpFileName, document)
     } catch (error) {
-      console.error(error)
-      return res.status(500).send({ message: "Error uploading to DB or Sending Message" });
+      return next(error)
     }
 
     upload_id = "";
   }
 
-
-
-  return res.json("ok")
+  res.json("ok")
 })
 
 app.get('/ping', (_, res) => {
-  return res.send('pong');
+  res.send('pong');
 })
+
+
+function consoleError(err: Error) {
+  console.error(`ERROR: ${err.name}`);
+  console.error(`ERROR_MESSAGE: ${err.message}`)
+  console.error(`STACK: ${err.stack}`)
+}
+// Error handler
+app.use((err: Error, _: Request, res: Response, next: NextFunction) => {
+  const errorType = err.name;
+  consoleError(err);
+
+  let data: Record<string, string> = {};
+  if (err instanceof MultipartChunkUploadError && err.data) {
+    data = err.data;
+  }
+
+  switch (errorType) {
+    case 'ENV_ERROR':
+      return res.status(500).send({ message: "Server Error!" });
+
+    case 'MUTLIPART_CHUNK_UPLOAD':
+      abortMultipartUpload(data.name, data.upload_id)
+      return res.status(500).send({ message: "Error uploading chunk" });
+
+    case 'MULTIPART_CHUNK_INIT':
+      return res.status(500).send({ message: "Error creating upload id!" });
+
+    case 'MULTIPART_CHUNK_ABORT':
+      return res.status(500).send({ message: "Error aborting chunk" });
+
+    case 'MULTIPART_CHUNK_COMPLETE':
+      abortMultipartUpload(data.name, data.upload_id)
+      return res.status(500).send({ message: "Error completing chunk" });
+
+    case 'DATABASE_CONNECTION':
+      return res.status(500).send({ message: "Error connecting to database" });
+
+    case 'DATABASE_UPLOAD':
+      return res.status(500).send({ message: "Error uploading to database" });
+
+    case 'SQS_SEND_MESSAGE':
+      return res.status(500).send({ message: "Error sending message to SQS" });
+
+    case 'SQS_RECEIVE_MESSAGE':
+      return res.status(500).send({ message: "Error receiving message from SQS" });
+
+    case 'SQS_QUEUE_URL':
+      return res.status(500).send({ message: "Error getting SQS queue URL" });
+  }
+
+  return res.status(500).send({ message: "Something broke!" });
+});
 
 app.listen(process.env.PORT, () => {
   if (!process.env.PORT) {
