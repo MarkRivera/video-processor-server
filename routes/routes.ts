@@ -1,8 +1,6 @@
-import { RouteOptions } from "fastify";
-import { getVideosMetadata, deleteVideo, getSingleVideoMetadata, createVideo } from "../src/controllers/videos.controllers"
-import { IncomingMessage, Server, ServerResponse } from "http";
+import { getVideosMetadata, deleteVideo, getSingleVideoMetadata } from "../src/controllers/videos.controllers"
 
-export const routes: RouteOptions<Server, IncomingMessage, ServerResponse, { Body: any }>[] = [
+export const routes = [
   {
     method: "GET",
     url: "/api/v1/videos",
@@ -18,9 +16,9 @@ export const routes: RouteOptions<Server, IncomingMessage, ServerResponse, { Bod
     url: "/api/v1/videos/:id",
     handler: deleteVideo
   },
-  {
-    method: "POST",
-    url: "/api/v1/videos/upload",
-    handler: createVideo
-  }
+  // {
+  //   method: "POST",
+  //   url: "/api/v1/videos/upload",
+  //   handler: createVideo
+  // }
 ];

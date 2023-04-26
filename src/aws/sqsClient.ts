@@ -14,7 +14,8 @@ if (!REGION) throw new TypeError("REGION is undefined!")
 
 // Create SQS service object.
 const sqsClient = new SQSClient({
-  region: REGION, credentials: {
+  region: REGION,
+  credentials: {
     accessKeyId: ACCESS_KEY,
     secretAccessKey: SECRET_ACCESS_KEY
   }

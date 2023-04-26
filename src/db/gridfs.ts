@@ -1,6 +1,6 @@
-import { Readable } from "stream";
 import db from "./connect";
 import { GridFSBucket, ObjectId } from "mongodb";
+import { createReadStream } from "fs";
 
 export async function createOrGetGridFS() {
   try {
@@ -14,21 +14,45 @@ export async function createOrGetGridFS() {
   }
 }
 
-export function upload(bucket: GridFSBucket, buffer: Buffer, filename: string, metadata: Record<string, any> = {}) {
-  const readableStreamBuffer = Readable.from(buffer);
+export const getBucket = async () => {
+  const bucket = await createOrGetGridFS();
+  if (!bucket) {
+    throw new Error("Trouble getting bucket!")
+  }
 
-  const stream = readableStreamBuffer
-    .pipe(bucket.openUploadStream(filename, {
+  return bucket;
+}
+
+export function upload(bucket: GridFSBucket, tmpFileName: string, metadata: Record<string, any> = {}) {
+  return createReadStream('./tmp/' + tmpFileName)
+    .pipe(bucket.openUploadStream(metadata.filename, {
       chunkSizeBytes: 1048576,
       metadata
     }))
-    .addListener('error', (err) => {
-      // TODO: Handle Error
-      console.error("Something went wrong with uploading to the bucket!", err)
-    })
-
-  return stream.id;
 };
+
+export async function uploadToBucket(finalFileName: string, metadata: Record<string, any>): Promise<ObjectId> {
+  const bucket = await createOrGetGridFS();
+  if (!bucket) {
+    throw new Error("Could not get bucket!")
+  }
+
+  const { name, type, size, totalChunks } = metadata;
+  const readStream = upload(bucket, finalFileName, {
+    filename: name,
+    tmpFilename: finalFileName,
+    type,
+    size: parseInt(size),
+    totalChunks: parseInt(totalChunks)
+  })
+
+  readStream.on("error", (error) => {
+    // Gracefully handle error
+    console.error(error);
+  })
+
+  return readStream.id;
+}
 
 export async function downloadMetadataById(_id: ObjectId, bucket: GridFSBucket) {
   const cursor = bucket.find({
