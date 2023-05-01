@@ -17,7 +17,7 @@ export async function createMultipartUpload(filename: string) {
     Key: filename,
   })
 
-  return await s3Client.send(command).catch(() => {
+  return s3Client.send(command).catch(() => {
     throw new MultipartChunkUploadError('Error creating multipart upload', 'MULTIPART_CHUNK_INIT')
   })
 }
@@ -31,7 +31,7 @@ export async function uploadParts(buffer: Buffer, uploadId: string, chunkNumber:
     PartNumber: chunkNumber + 1, // Must be between 1 and 10000
   })
 
-  return await s3Client.send(command).catch(() => {
+  return s3Client.send(command).catch(() => {
     throw new MultipartChunkUploadError('Error Uploading Part', 'MUTLIPART_CHUNK_UPLOAD', { uploadId, filename });
   })
 }
@@ -43,15 +43,15 @@ export async function abortMultipartUpload(filename: string, uploadId: string) {
     UploadId: uploadId,
   })
 
-  return await s3Client.send(command).catch(() => {
+  return s3Client.send(command).catch(() => {
     throw new MultipartChunkUploadError('Error aborting multipart upload', 'MULTIPART_CHUNK_ABORT', { uploadId, filename })
   })
 }
 
-export async function closeMultipartUpload(filename: string, uploadId: string, etags: CompletedPart[]) {
+export async function closeMultipartUpload(tmpFilename: string, uploadId: string, etags: CompletedPart[]) {
   const command = new CompleteMultipartUploadCommand({
     Bucket: process.env.BUCKET_NAME_RAW,
-    Key: filename,
+    Key: tmpFilename,
     UploadId: uploadId,
     MultipartUpload: {
       Parts: etags.map((data, idx) => {
@@ -64,31 +64,29 @@ export async function closeMultipartUpload(filename: string, uploadId: string, e
   })
 
   etags = [];
-  return await s3Client.send(command).catch(() => {
-    throw new MultipartChunkUploadError('Error completing multipart upload', 'MULTIPART_CHUNK_COMPLETE', { uploadId, filename })
+  return s3Client.send(command).catch((err) => {
+    throw new MultipartChunkUploadError('Error completing multipart upload', 'MULTIPART_CHUNK_COMPLETE', { uploadId, filename: tmpFilename })
   })
 }
 
-export async function uploadMutlipartToRawS3Bucket(filename: string, chunk: Buffer, chunkNumber: number, isLastChunk: boolean, upload_id: string) {
-  if (!upload_id) {
-    throw new MultipartChunkUploadError('Upload ID is missing!', 'MULTIPART_CHUNK_INIT')
+export async function uploadMutlipartToRawS3Bucket(tmpFilename: string, chunk: Buffer, chunkNumber: number, isLastChunk: boolean, upload_id: string) {
+  const data = await uploadParts(chunk, upload_id, chunkNumber, tmpFilename);
+
+  return {
+    ETag: data.ETag as string,
+    PartNumber: chunkNumber + 1,
   }
-
-  const data = await uploadParts(chunk, upload_id, chunkNumber, filename);
-  if (!data) throw new MultipartChunkUploadError('Error uploading last chunk', 'MUTLIPART_CHUNK_UPLOAD', { upload_id, filename });
-
   etags.push(
     {
-      ETag: data.ETag?.replace(/^"|"$/g, "") as string, // Remove quotes from ETag
+      ETag: data.ETag as string,
       PartNumber: chunkNumber + 1,
     }
   )
 
   if (isLastChunk) {
-    await closeMultipartUpload(filename, upload_id, etags) // Might not need to await this
+    await closeMultipartUpload(tmpFilename, upload_id, etags)
     etags = []
   }
-
 }
 
 export async function uploadToRawS3Bucket(filename: string, buffer: Buffer) {
@@ -99,7 +97,7 @@ export async function uploadToRawS3Bucket(filename: string, buffer: Buffer) {
   })
 
   try {
-    return await s3Client.send(command)
+    return s3Client.send(command)
   } catch (error) {
     console.error(error)
     throw new Error('Error uploading to S3')

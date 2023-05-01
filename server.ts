@@ -6,13 +6,11 @@ import bodyParser from 'body-parser';
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
-import { existsSync, mkdirSync } from 'fs';
 import md5 from 'md5';
 
-import { sendMessage } from './src/aws/sendMessage';
-import { abortMultipartUpload, createMultipartUpload, uploadMutlipartToRawS3Bucket } from './src/aws/s3/upload';
-import { uploadData } from './src/db/db';
+import { abortMultipartUpload, createMultipartUpload } from './src/aws/s3/upload';
 import { MultipartChunkUploadError } from './src/errors';
+import { TaskQueue } from './src/rabbit/connect';
 
 const app = express();
 app.use(helmet());
@@ -21,23 +19,14 @@ app.use(cors({
 }));
 
 app.use(bodyParser.raw({ type: 'application/octet-stream', limit: '200mb' }));
+
 app.use(morgan('combined', {
   skip: function (_, res) { return res.statusCode < 400 }
 }));
 
-// If tmp directory doesn't exist, create it
-if (!existsSync('./tmp')) {
-  try {
-    mkdirSync('./tmp');
-  } catch (error) {
-    console.error(error);
-    throw new Error('Error creating tmp directory');
-  }
-}
+const requestCache: Record<string, string> = {};
 
-let upload_id: string = "";
-
-app.post("/api/v1/videos/upload", async (req: Request, res: Response, next: NextFunction) => {
+app.post("/api/v1/videos/upload", async function uploadHandler(req: Request, res: Response, next: NextFunction) {
   const { name, size, currentChunk, totalChunks, type } = req.query;
 
   if (!name || !size || !currentChunk || !totalChunks || !type) {
@@ -48,55 +37,57 @@ app.post("/api/v1/videos/upload", async (req: Request, res: Response, next: Next
     return res.status(400).send({ message: "Query parameters are not strings" });
   }
 
-  const firstChunk = parseInt(currentChunk) === 0;
-  const lastChunk = parseInt(currentChunk) === parseInt(totalChunks) - 1;
   const ext = name.split('.')[1];
-  const data = req.body.toString().split(',')[1];
-  const buffer = Buffer.from(data, "base64");
   const tmpFileName = md5(name + req.ip) + '.' + ext;
 
-  if (firstChunk) {
+  const data = req.body.toString().split(',')[1];
+  let buffer = Buffer.from(data, "base64");
+
+  const isLastChunk = parseInt(currentChunk) === parseInt(totalChunks) - 1;
+
+
+  let upload_id = requestCache[tmpFileName];
+  if (!upload_id) {
     try {
-      // This implementation is not ideal, but it works for now. If other new requests come in while the previous one is still uploading, the upload_id will be overwritten
-      // This can be fixed by using a redis cache to store the upload_id and check if it exists before creating a new one
-      upload_id = (await createMultipartUpload(tmpFileName)).UploadId as string; // Get multipart upload id
-    } catch (error) {
-      return next(error)
+      const getId = await createMultipartUpload(tmpFileName);
+      if (!getId.UploadId) {
+        throw new MultipartChunkUploadError('Upload ID is missing!', 'MULTIPART_CHUNK_INIT')
+      }
+
+      upload_id = requestCache[tmpFileName] = getId.UploadId
+    } catch (err) {
+      next(err)
     }
   }
 
-  try {
-    await uploadMutlipartToRawS3Bucket(tmpFileName, buffer, parseInt(currentChunk), lastChunk, upload_id) // Upload to S3 bucket in chunks
-  } catch (error) {
-    return next(error)
+  const rabbitMsg = {
+    tmpFileName,
+    isLastChunk,
+    currentChunk,
+    chunk: buffer,
+    totalChunks,
+    upload_id
   }
 
-  if (lastChunk) {
-    const document = {
-      name,
-      size,
-      type,
-      upload_id,
-      totalChunks,
-      bucketName: tmpFileName
-    }
+  const json = JSON.stringify(rabbitMsg)
+  await TaskQueue.getChannel();
+  await TaskQueue.sendToQueue("S3 Rabbit Queue", Buffer.from(json));
 
-    try {
-      await uploadData(document)
-      await sendMessage(tmpFileName, document)
-    } catch (error) {
-      return next(error)
-    }
-
-    upload_id = "";
+  if (isLastChunk) {
+    delete requestCache[tmpFileName]
+    upload_id = ""
   }
 
-  res.json("ok")
+  res.json({
+    msg: "Data Received, processing video."
+  })
 })
 
-app.get('/ping', (_, res) => {
+function getHandler(_: Request, res: Response) {
   res.send('pong');
-})
+}
+
+app.get('/ping', getHandler)
 
 
 function consoleError(err: Error) {

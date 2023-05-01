@@ -6,8 +6,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "ts-node-transpile-only server.ts",
+    "start-eco": "tsc && pm2 start ecosystem.config.js",
     "dev": "concurrently \"npx tsc -w\" \"nodemon server.ts\"",
-    "performance": "node --loader ts-node/esm --inspect-brk server.ts"
+    "performance": "npx tsc && clinic flame -- node ./dist/server.js"
   },
   "author": "Mark Rivera",
   "license": "ISC",
@@ -16,6 +17,7 @@
     "@aws-sdk/client-sqs": "^3.32.0",
     "@aws-sdk/node-http-handler": "^3.32.0",
     "@aws-sdk/types": "^3.32.0",
+    "amqplib": "^0.10.3",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "dotenv": "^16.0.3",
@@ -23,9 +25,11 @@
     "helmet": "^6.1.5",
     "md5": "^2.3.0",
     "mongodb": "5.2",
-    "morgan": "^1.10.0"
+    "morgan": "^1.10.0",
+    "redis": "^4.6.6"
   },
   "devDependencies": {
+    "@types/amqplib": "^0.10.1",
     "@types/cors": "^2.8.13",
     "@types/express": "^4.17.17",
     "@types/md5": "^2.3.2",
