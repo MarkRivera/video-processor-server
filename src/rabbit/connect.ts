@@ -28,6 +28,5 @@ export class TaskQueue {
   static async sendToQueue(queueName: string, buffer: Buffer) {
     await this.getOrCreateQueue(queueName);
     this.channel.sendToQueue(queueName, buffer, { persistent: true });
-    console.log("Sent!")
   }
 };

@@ -41,7 +41,6 @@ app.post("/api/v1/videos/upload", async function uploadHandler(req: Request, res
   const tmpFileName = md5(name + req.ip) + '.' + ext;
 
   const data = req.body.toString().split(',')[1];
-  let buffer = Buffer.from(data, "base64");
 
   const isLastChunk = parseInt(currentChunk) === parseInt(totalChunks) - 1;
 
@@ -60,18 +59,23 @@ app.post("/api/v1/videos/upload", async function uploadHandler(req: Request, res
     }
   }
 
-  const rabbitMsg = {
-    tmpFileName,
-    isLastChunk,
-    currentChunk,
-    chunk: buffer,
-    totalChunks,
-    upload_id
-  }
+  // TODO: Create Doc in Db to track status
 
-  const json = JSON.stringify(rabbitMsg)
-  await TaskQueue.getChannel();
-  await TaskQueue.sendToQueue("S3 Rabbit Queue", Buffer.from(json));
+  TaskQueue.getChannel().then(() => {
+    let buffer = Buffer.from(data, "base64");
+    const rabbitMsg = {
+      tmpFileName,
+      isLastChunk,
+      currentChunk,
+      chunk: buffer,
+      totalChunks,
+      upload_id
+    }
+
+    stringify(rabbitMsg).then(json => {
+      TaskQueue.sendToQueue("S3 Rabbit Queue", Buffer.from(json));
+    })
+  })
 
   if (isLastChunk) {
     delete requestCache[tmpFileName]
@@ -85,6 +89,10 @@ app.post("/api/v1/videos/upload", async function uploadHandler(req: Request, res
 
 function getHandler(_: Request, res: Response) {
   res.send('pong');
+}
+
+async function stringify(data: Record<string, string | boolean | Buffer>) {
+  return JSON.stringify(data)
 }
 
 app.get('/ping', getHandler)
