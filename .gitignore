@@ -13,6 +13,10 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Distribution / packaging
 dist
 
+# Clinic files
+*.clinic.json
+.clinic
+
 # Runtime data
 pids
 *.pid
